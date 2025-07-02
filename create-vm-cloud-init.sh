@@ -40,14 +40,24 @@ read_input() {
 # Función para convertir tamaño a bytes
 size_to_bytes() {
     local size="$1"
-    case "${size: -1}" in
-        [0-9]) echo "${size}" ;;
-        K|k) echo $((${size%?} * 1024)) ;;
-        M|m) echo $((${size%?} * 1024 * 1024)) ;;
-        G|g) echo $((${size%?} * 1024 * 1024 * 1024)) ;;
-        T|t) echo $((${size%?} * 1024 * 1024 * 1024 * 1024)) ;;
-        *) error "Formato de tamaño inválido: $size" ;;
-    esac
+    # Remover espacios y convertir a minúsculas para el sufijo
+    size=$(echo "$size" | tr -d ' ' | tr '[:upper:]' '[:lower:]')
+    
+    # Extraer número y sufijo
+    if [[ $size =~ ^([0-9]+\.?[0-9]*)([kmgt]?)$ ]]; then
+        local num="${BASH_REMATCH[1]}"
+        local suffix="${BASH_REMATCH[2]}"
+        
+        case "$suffix" in
+            "") echo "${num%.*}" ;; # Sin sufijo, asumir bytes
+            k) echo $(( ${num%.*} * 1024 )) ;;
+            m) echo $(( ${num%.*} * 1024 * 1024 )) ;;
+            g) echo $(( ${num%.*} * 1024 * 1024 * 1024 )) ;;
+            t) echo $(( ${num%.*} * 1024 * 1024 * 1024 * 1024 )) ;;
+        esac
+    else
+        error "Formato de tamaño inválido: $size (use formato: 10G, 512M, etc.)"
+    fi
 }
 
 echo -e "${BLUE}=== 🛠️  Script para crear VM desde imagen cloud ===${NC}\n"
@@ -147,18 +157,59 @@ if command -v qemu-img &> /dev/null; then
     read_input "¿Redimensionar disco? (y/n)" "n" "resize_disk"
     
     if [[ "$resize_disk" =~ ^[Yy]$ ]]; then
-        read_input "Nuevo tamaño (ej: 20G, 50G, 100G)" "20G" "new_size"
-        
-        # Validar que el nuevo tamaño sea mayor que el actual
-        current_bytes=$(echo "$img_info" | grep "virtual size:" | sed 's/.*(\([0-9]*\) bytes).*/\1/')
-        new_bytes=$(size_to_bytes "$new_size")
-        
-        if [ "$new_bytes" -le "$current_bytes" ]; then
-            warn "El nuevo tamaño debe ser mayor que el actual. Saltando redimensionado."
-            resize_disk="n"
-        else
-            resize_needed="true"
-        fi
+        # Bucle para permitir reintentar el tamaño
+        while true; do
+            read_input "Nuevo tamaño (ej: 10G, 20G, 50G)" "20G" "new_size"
+            
+            # Extraer bytes del formato "X.X GiB (XXXXXXXXX bytes)" de forma más robusta
+            current_bytes=$(echo "$img_info" | grep "virtual size:" | sed -n 's/.*(\([0-9,]*\) bytes).*/\1/p' | tr -d ',')
+            
+            # Si no se pudo extraer, intentar método alternativo
+            if [ -z "$current_bytes" ] || [ "$current_bytes" = "0" ]; then
+                current_bytes=$(echo "$img_info" | grep -o '[0-9,]* bytes' | head -1 | tr -d ', bytes')
+            fi
+            
+            # Si aún no funciona, permitir el redimensionado sin validación
+            if [ -z "$current_bytes" ] || [ "$current_bytes" = "0" ]; then
+                warn "No se pudo determinar el tamaño actual exacto. Procediendo sin validación."
+                resize_needed="true"
+                break
+            else
+                new_bytes=$(size_to_bytes "$new_size")
+                
+                log "Comparando: actual=$current_bytes bytes vs nuevo=$new_bytes bytes"
+                
+                if [ "$new_bytes" -le "$current_bytes" ]; then
+                    echo -e "${YELLOW}El nuevo tamaño ($new_size = $new_bytes bytes) debe ser mayor que el actual ($current_bytes bytes)${NC}"
+                    echo "Opciones:"
+                    echo "  1) Introducir otro tamaño"
+                    echo "  2) Continuar de todas formas"
+                    echo "  3) Cancelar redimensionado"
+                    read_input "Seleccionar opción (1-3)" "1" "size_choice"
+                    
+                    case "$size_choice" in
+                        1)
+                            continue  # Volver al inicio del bucle
+                            ;;
+                        2)
+                            resize_needed="true"
+                            break
+                            ;;
+                        3)
+                            resize_disk="n"
+                            break
+                            ;;
+                        *)
+                            warn "Opción inválida, volviendo a pedir tamaño..."
+                            continue
+                            ;;
+                    esac
+                else
+                    resize_needed="true"
+                    break
+                fi
+            fi
+        done
     fi
 else
     warn "qemu-img no disponible, no se puede redimensionar"
@@ -259,33 +310,48 @@ fi
 # Importar disco - CORRECCIÓN del problema original
 log "Importando disco desde $(basename "$image")..."
 
-# Determinar formato basado en la extensión del archivo
+# *** NUEVA SECCIÓN: Selección de formato de salida ***
+echo -e "\n${BLUE}Formato del disco en Proxmox:${NC}"
+echo "  1) raw - Mejor rendimiento, más espacio"
+echo "  2) qcow2 - Snapshots, thin provisioning, menos espacio"
+read_input "Seleccionar formato final (1-2)" "1" "format_choice"
+
+case "$format_choice" in
+    1) final_format="raw" ;;
+    2) final_format="qcow2" ;;
+    *) 
+        warn "Selección inválida, usando raw por defecto"
+        final_format="raw"
+        ;;
+esac
+
+# Determinar formato de la imagen original para qemu-img info
 case "${image,,}" in
     *.img|*.raw)
-        import_format="raw"
+        source_format="raw"
         ;;
     *.qcow2)
-        import_format="qcow2"
+        source_format="qcow2"
         ;;
     *.vmdk)
-        import_format="vmdk"
+        source_format="vmdk"
         ;;
     *)
         # Detectar formato automáticamente usando qemu-img si está disponible
         if command -v qemu-img &> /dev/null; then
             detected_format=$(qemu-img info "$image" 2>/dev/null | grep "file format:" | awk '{print $3}')
-            import_format="${detected_format:-raw}"
-            log "Formato detectado automáticamente: $import_format"
+            source_format="${detected_format:-raw}"
+            log "Formato origen detectado automáticamente: $source_format"
         else
-            import_format="raw"
-            warn "No se pudo detectar el formato, usando RAW por defecto"
+            source_format="raw"
+            warn "No se pudo detectar el formato origen, usando RAW por defecto"
         fi
         ;;
 esac
 
-# Importar con el formato correcto
-log "Importando disco con formato: $import_format"
-if ! qm importdisk "$vmid" "$image" "$storage" --format "$import_format"; then
+# Importar con el formato final seleccionado
+log "Importando disco: $source_format → $final_format"
+if ! qm importdisk "$vmid" "$image" "$storage" --format "$final_format"; then
     error "Falló la importación del disco"
 fi
 
@@ -381,8 +447,18 @@ echo "  - CPU: $cores cores, $sockets sockets ($cputype)"
 echo "  - RAM: ${memory}MB"
 echo "  - BIOS: $bios_type"
 echo "  - Máquina: $machine_type"
+echo "  - Formato disco: $final_format"
 if [[ "$resize_disk" =~ ^[Yy]$ && "$resize_needed" == "true" ]]; then
     echo "  - Disco redimensionado a: $new_size"
+fi
+
+echo -e "\n${BLUE}Discos creados:${NC}"
+echo "  - scsi0: Disco principal del sistema ($final_format)"
+if [ "$bios_type" = "ovmf" ]; then
+    echo "  - efidisk0: Disco EFI para arranque UEFI (~1MB)"
+fi
+if [[ "$add_cloudinit" =~ ^[Yy]$ ]]; then
+    echo "  - ide2: Disco Cloud-init (~4MB)"
 fi
 
 echo -e "\n${BLUE}Comandos útiles:${NC}"
