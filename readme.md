@@ -28,3 +28,23 @@ Consola serial: habilitada por defecto
 Cloud-init: habilitado por defecto
 
 El script ahora es más robusto, compacto y maneja correctamente todos los formatos de imagen comunes en Proxmox.
+
+🎯 Pasos siguientes recomendados:
+
+Iniciar la VM para probar:
+bashqm start 830
+
+Conectar por consola:
+bashqm terminal 830
+
+Configurar Cloud-init (desde la web UI):
+
+Usuario y contraseña
+SSH keys
+Configuración de red
+
+
+Convertir en template (después de configurar):
+bashqm template 830
+Clonar para crear VMs:
+bashqm clone 830 831 --name mi-nueva-vm
