@@ -48,3 +48,46 @@ Convertir en template (después de configurar):
 bashqm template 830
 Clonar para crear VMs:
 bashqm clone 830 831 --name mi-nueva-vm
+
+Principales mejoras implementadas:
+1. Selección de tipo de BIOS/UEFI
+
+SeaBIOS (Legacy): Para máxima compatibilidad con sistemas antiguos
+OVMF (UEFI): Para sistemas modernos, necesario para Secure Boot
+Automáticamente configura --machine q35 cuando se selecciona OVMF
+Añade el disco EFI necesario para UEFI: --efidisk0
+
+2. Redimensionado de disco con qemu-img resize
+
+Momento ideal: Antes de importar el disco a Proxmox
+Muestra el tamaño actual de la imagen
+Valida que el nuevo tamaño sea mayor que el actual
+Crea una copia temporal para redimensionar sin afectar la imagen original
+Limpia automáticamente el archivo temporal
+
+3. Información mejorada de imágenes
+
+Muestra formato, tamaño en disco y tamaño virtual
+Detección automática del formato de imagen
+
+4. Función auxiliar para conversión de tamaños
+
+Convierte formatos como "20G", "512M" a bytes para validación
+
+Flujo del redimensionado:
+1. Detectar imagen → 2. Mostrar tamaño actual → 3. Preguntar si redimensionar
+→ 4. Validar nuevo tamaño → 5. Crear copia temporal → 6. Redimensionar
+→ 7. Importar imagen redimensionada → 8. Limpiar temporal
+Ejemplo de uso:
+bash# El script ahora preguntará:
+Configuración de BIOS/UEFI:
+  1) SeaBIOS (Legacy BIOS) - Compatibilidad máxima  
+  2) OVMF (UEFI) - Moderno, necesario para Secure Boot
+Seleccionar tipo de BIOS (1-2) [1]: 2
+
+# Y después:
+Redimensionar disco:
+Tamaño actual: 2.5G
+¿Redimensionar disco? (y/n) [n]: y
+Nuevo tamaño (ej: 20G, 50G, 100G) [20G]: 50G
+El script mantiene toda la funcionalidad original mientras añade estas mejoras críticas para crear VMs más versátiles y con el tamaño de disco adecuado desde el inicio.

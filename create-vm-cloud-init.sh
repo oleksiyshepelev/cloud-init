@@ -37,6 +37,19 @@ read_input() {
     eval "$var_name=\"\${input:-$default}\""
 }
 
+# Función para convertir tamaño a bytes
+size_to_bytes() {
+    local size="$1"
+    case "${size: -1}" in
+        [0-9]) echo "${size}" ;;
+        K|k) echo $((${size%?} * 1024)) ;;
+        M|m) echo $((${size%?} * 1024 * 1024)) ;;
+        G|g) echo $((${size%?} * 1024 * 1024 * 1024)) ;;
+        T|t) echo $((${size%?} * 1024 * 1024 * 1024 * 1024)) ;;
+        *) error "Formato de tamaño inválido: $size" ;;
+    esac
+}
+
 echo -e "${BLUE}=== 🛠️  Script para crear VM desde imagen cloud ===${NC}\n"
 
 # Configuración con valores por defecto
@@ -50,6 +63,35 @@ fi
 
 # Configuración del sistema
 read_input "Tipo de OS (l26/w10/other)" "l26" "ostype"
+
+# *** NUEVA SECCIÓN: Tipo de BIOS ***
+echo -e "\n${BLUE}Configuración de BIOS/UEFI:${NC}"
+echo "  1) SeaBIOS (Legacy BIOS) - Compatibilidad máxima"
+echo "  2) OVMF (UEFI) - Moderno, necesario para Secure Boot"
+read_input "Seleccionar tipo de BIOS (1-2)" "1" "bios_choice"
+
+case "$bios_choice" in
+    1)
+        bios_type="seabios"
+        machine_type="pc"
+        ;;
+    2)
+        bios_type="ovmf"
+        machine_type="q35"
+        # Verificar si existe el archivo OVMF
+        if [ ! -f "/usr/share/pve-edk2-firmware/OVMF_CODE.fd" ]; then
+            warn "OVMF no está instalado. Instalar con: apt install pve-edk2-firmware"
+        fi
+        ;;
+    *)
+        warn "Selección inválida, usando SeaBIOS por defecto"
+        bios_type="seabios"
+        machine_type="pc"
+        ;;
+esac
+
+log "BIOS seleccionado: $bios_type, Máquina: $machine_type"
+
 read_input "Tipo de CPU" "x86-64-v2-AES" "cputype"
 read_input "Número de cores" "2" "cores"
 read_input "Número de sockets" "1" "sockets"
@@ -74,7 +116,15 @@ echo -e "\n${BLUE}Imágenes encontradas:${NC}"
 for i in "${!images[@]}"; do
     filename=$(basename "${images[$i]}")
     size=$(du -h "${images[$i]}" | cut -f1)
-    echo "  $((i+1))) $filename ($size)"
+    # Mostrar información adicional de la imagen si qemu-img está disponible
+    if command -v qemu-img &> /dev/null; then
+        img_info=$(qemu-img info "${images[$i]}" 2>/dev/null)
+        img_format=$(echo "$img_info" | grep "file format:" | awk '{print $3}')
+        virtual_size=$(echo "$img_info" | grep "virtual size:" | awk '{print $3}')
+        echo "  $((i+1))) $filename ($size en disco, $virtual_size virtual, formato: $img_format)"
+    else
+        echo "  $((i+1))) $filename ($size)"
+    fi
 done
 
 read_input "Seleccionar imagen (número)" "1" "img_choice"
@@ -86,6 +136,34 @@ fi
 
 image="${images[$img_index]}"
 log "Imagen seleccionada: $(basename "$image")"
+
+# *** NUEVA SECCIÓN: Redimensionar disco ***
+if command -v qemu-img &> /dev/null; then
+    img_info=$(qemu-img info "$image" 2>/dev/null)
+    current_size=$(echo "$img_info" | grep "virtual size:" | awk '{print $3}')
+    
+    echo -e "\n${BLUE}Redimensionar disco:${NC}"
+    echo "Tamaño actual: $current_size"
+    read_input "¿Redimensionar disco? (y/n)" "n" "resize_disk"
+    
+    if [[ "$resize_disk" =~ ^[Yy]$ ]]; then
+        read_input "Nuevo tamaño (ej: 20G, 50G, 100G)" "20G" "new_size"
+        
+        # Validar que el nuevo tamaño sea mayor que el actual
+        current_bytes=$(echo "$img_info" | grep "virtual size:" | sed 's/.*(\([0-9]*\) bytes).*/\1/')
+        new_bytes=$(size_to_bytes "$new_size")
+        
+        if [ "$new_bytes" -le "$current_bytes" ]; then
+            warn "El nuevo tamaño debe ser mayor que el actual. Saltando redimensionado."
+            resize_disk="n"
+        else
+            resize_needed="true"
+        fi
+    fi
+else
+    warn "qemu-img no disponible, no se puede redimensionar"
+    resize_disk="n"
+fi
 
 # Obtener almacenamientos
 log "Obteniendo almacenamientos disponibles..."
@@ -131,7 +209,7 @@ fi
 storage="${storages[$storage_index]}"
 
 # Controlador SCSI
-read_input "Controlador SCSI (virtio-scsi-single/ide)" "virtio-scsi-single" "scsihw"
+read_input "Controlador SCSI (virtio-scsi-single/virtio-scsi-pci/lsi)" "virtio-scsi-single" "scsihw"
 
 # Crear VM
 log "Creando VM con ID $vmid..."
@@ -144,7 +222,15 @@ create_cmd="qm create $vmid \
     --sockets $sockets \
     --memory $memory \
     --net0 \"$nic_model,bridge=$bridge\" \
-    --scsihw \"$scsihw\""
+    --scsihw \"$scsihw\" \
+    --machine \"$machine_type\""
+
+# Configurar BIOS
+if [ "$bios_type" = "ovmf" ]; then
+    create_cmd+=" --bios ovmf"
+    # Añadir EFI disk para UEFI
+    create_cmd+=" --efidisk0 \"$storage:1,efitype=4m,pre-enrolled-keys=0\""
+fi
 
 # Agregar consola serial si está habilitada
 if [[ "$enable_serial" =~ ^[Yy]$ ]]; then
@@ -152,6 +238,23 @@ if [[ "$enable_serial" =~ ^[Yy]$ ]]; then
 fi
 
 eval "$create_cmd" || error "Falló la creación de la VM"
+
+# *** REDIMENSIONAR IMAGEN ANTES DE IMPORTAR ***
+if [[ "$resize_disk" =~ ^[Yy]$ && "$resize_needed" == "true" ]]; then
+    log "Redimensionando imagen a $new_size..."
+    
+    # Crear copia temporal para redimensionar
+    temp_image="/tmp/$(basename "$image").resized"
+    cp "$image" "$temp_image" || error "No se pudo crear copia temporal"
+    
+    if qemu-img resize "$temp_image" "$new_size"; then
+        success "Imagen redimensionada exitosamente a $new_size"
+        image="$temp_image"
+        cleanup_temp="true"
+    else
+        error "Falló el redimensionado de la imagen"
+    fi
+fi
 
 # Importar disco - CORRECCIÓN del problema original
 log "Importando disco desde $(basename "$image")..."
@@ -184,6 +287,12 @@ esac
 log "Importando disco con formato: $import_format"
 if ! qm importdisk "$vmid" "$image" "$storage" --format "$import_format"; then
     error "Falló la importación del disco"
+fi
+
+# Limpiar archivo temporal si se creó
+if [[ "${cleanup_temp:-}" == "true" ]]; then
+    rm -f "$temp_image"
+    log "Archivo temporal eliminado"
 fi
 
 # Después de importar, el disco queda como "unused". Necesitamos encontrarlo y asociarlo
@@ -270,6 +379,11 @@ echo "  - Imagen: $(basename "$image")"
 echo "  - Almacenamiento: $storage"
 echo "  - CPU: $cores cores, $sockets sockets ($cputype)"
 echo "  - RAM: ${memory}MB"
+echo "  - BIOS: $bios_type"
+echo "  - Máquina: $machine_type"
+if [[ "$resize_disk" =~ ^[Yy]$ && "$resize_needed" == "true" ]]; then
+    echo "  - Disco redimensionado a: $new_size"
+fi
 
 echo -e "\n${BLUE}Comandos útiles:${NC}"
 echo "  - Ver configuración: qm config $vmid"
