@@ -84,10 +84,3 @@ Configuración de BIOS/UEFI:
   1) SeaBIOS (Legacy BIOS) - Compatibilidad máxima  
   2) OVMF (UEFI) - Moderno, necesario para Secure Boot
 Seleccionar tipo de BIOS (1-2) [1]: 2
-
-# Y después:
-Redimensionar disco:
-Tamaño actual: 2.5G
-¿Redimensionar disco? (y/n) [n]: y
-Nuevo tamaño (ej: 20G, 50G, 100G) [20G]: 50G
-El script mantiene toda la funcionalidad original mientras añade estas mejoras críticas para crear VMs más versátiles y con el tamaño de disco adecuado desde el inicio.
