@@ -92,16 +92,12 @@ read_input "Tipo de OS (l26/w10/other)" "l26" "ostype"
 
 # *** NUEVA SECCIÓN: Tipo de BIOS ***
 echo -e "\n${BLUE}Configuración de BIOS/UEFI:${NC}"
-echo "  1) SeaBIOS (Legacy BIOS) - Compatibilidad máxima"
-echo "  2) OVMF (UEFI) - Moderno, necesario para Secure Boot"
+echo "  1) OVMF (UEFI) - Moderno, necesario para Secure Boot"
+echo "  2) SeaBIOS (Legacy BIOS) - Compatibilidad máxima"
 read_input "Seleccionar tipo de BIOS (1-2)" "1" "bios_choice"
 
 case "$bios_choice" in
     1)
-        bios_type="seabios"
-        machine_type="pc"
-        ;;
-    2)
         bios_type="ovmf"
         machine_type="q35"
         # Verificar si existe el archivo OVMF
@@ -109,10 +105,14 @@ case "$bios_choice" in
             warn "OVMF no está instalado. Instalar con: apt install pve-edk2-firmware"
         fi
         ;;
-    *)
-        warn "Selección inválida, usando SeaBIOS por defecto"
+    2)
         bios_type="seabios"
         machine_type="pc"
+        ;;
+    *)
+        warn "Selección inválida, usando OVMF (UEFI) por defecto"
+        bios_type="ovmf"
+        machine_type="q35"
         ;;
 esac
 
