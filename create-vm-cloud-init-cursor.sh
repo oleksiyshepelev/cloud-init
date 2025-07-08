@@ -244,16 +244,16 @@ log "Importando disco desde $(basename "$image")..."
 
 # *** NUEVA SECCIÓN: Selección de formato de salida ***
 echo -e "\n${BLUE}Formato del disco en Proxmox:${NC}"
-echo "  1) raw - Mejor rendimiento, más espacio"
-echo "  2) qcow2 - Snapshots, thin provisioning, menos espacio"
+echo "  1) qcow2 - Snapshots, thin provisioning, menos espacio"
+echo "  2) raw - Mejor rendimiento, más espacio"
 read_input "Seleccionar formato final (1-2)" "1" "format_choice"
 
 case "$format_choice" in
-    1) final_format="raw" ;;
-    2) final_format="qcow2" ;;
+    1) final_format="qcow2" ;;
+    2) final_format="raw" ;;
     *) 
-        warn "Selección inválida, usando raw por defecto"
-        final_format="raw"
+        warn "Selección inválida, usando qcow2 por defecto"
+        final_format="qcow2"
         ;;
 esac
 
